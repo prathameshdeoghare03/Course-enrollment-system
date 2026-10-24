@@ -5,7 +5,7 @@ import pandas as pd
 from typing import Any, cast
 from collections.abc import Mapping
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = "https://course-enrollment-system-fgr7.onrender.com"
 
 st.set_page_config(
     page_title="Course Enrollment System",
