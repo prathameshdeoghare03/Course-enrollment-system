@@ -1,3 +1,4 @@
+
 import requests
 import streamlit as st
 import pandas as pd
@@ -14,7 +15,7 @@ st.set_page_config(
 
 # SIDEBAR
 try:
-    st.sidebar.image("logo.png", width=120)
+    st.sidebar.image(r"D:\Course Enrollment System\frontend\logo.png", width=120)
 except (FileNotFoundError, OSError):
     st.sidebar.write("🎓")
 
@@ -134,11 +135,10 @@ enrollments = get_data("/enrollments/")
 if page == "Dashboard":
 
     # ---------- Header ----------
-    logo_col, title_col = st.columns([1, 6])
-
-    with logo_col:
-        st.image(r"D:\course\frontend\logo.png", width=100)
-
+    title_col1, title_col = st.columns([1, 6])
+        
+    with title_col1:
+        st.image("logo.png", width=100)
     with title_col:
         st.title("Course Enrollment System")
         st.caption("ONLINE LEARNING MANAGEMENT")
