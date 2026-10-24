@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🎓 Online Course Enrollment System
 
 A web-based application developed using FastAPI, PostgreSQL, SQLAlchemy, and Streamlit to manage courses, students, and course enrollments. The project provides REST API endpoints for backend operations and a Streamlit dashboard for interacting with and viewing the system's data.
@@ -297,3 +298,7 @@ This project is developed for educational purposes to practice backend developme
 - **GitHub:** [prathameshdeoghare03](https://github.com/prathameshdeoghare03)
 - **LinkedIn:** [Prathamesh Deoghare](https://www.linkedin.com/in/prathamesh-deoghare-2524632b8/)
 
+=======
+# course-enrollment-system
+Course Enrollment System using FastAPI and PostgreSQL
+>>>>>>> a74de32e0075da6f76eed6c33fd3ca8e0b36e440
