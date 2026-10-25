@@ -1,101 +1,153 @@
 
+from pathlib import Path
+from typing import Any, cast
+
+import pandas as pd
 import requests
 import streamlit as st
-import pandas as pd
-from typing import Any, cast
-from collections.abc import Mapping
 
-API_URL = "https://course-enrollment-system-fgr7.onrender.com"
+
+# =========================================================
+# CONFIGURATION
+# =========================================================
+
+API_URL = "https://course-enrollment-system-fgr7.onrender.com".rstrip("/")
+API_TIMEOUT = 25
+
+BASE_DIR = Path(__file__).resolve().parent
+LOGO_PATH = BASE_DIR / "logo.png"
 
 st.set_page_config(
     page_title="Course Enrollment System",
     page_icon="🎓",
     layout="wide",
-)
-
-# SIDEBAR
-try:
-    st.sidebar.image(r"D:\Course Enrollment System\frontend\logo.png", width=120)
-except (FileNotFoundError, OSError):
-    st.sidebar.write("🎓")
-
-st.sidebar.title("Course Enrollment")
-st.sidebar.caption("Online Learning Management")
-
-page = st.sidebar.selectbox(
-    "Navigate",
-    ["Dashboard", "Courses", "Students", "Enrollments"],
+    initial_sidebar_state="expanded",
 )
 
 
-# API FUNCTIONS
-def send_data(
+# =========================================================
+# STYLING
+# =========================================================
+
+st.markdown(
+    """
+    <style>
+    .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+    }
+    div[data-testid="stMetric"] {
+        background: var(--secondary-background-color);
+        padding: 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(128, 128, 128, 0.20);
+    }
+    div[data-testid="stMetricLabel"] {
+        font-weight: 600;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# =========================================================
+# API HELPERS
+# =========================================================
+
+def api_request(
     method: str,
     endpoint: str,
-    data: Mapping[str, Any] | None = None,
-) -> bool:
+    data: dict[str, Any] | None = None,
+) -> tuple[bool, Any]:
+    """Send a request to FastAPI and return success plus response data."""
+    url = f"{API_URL}/{endpoint.lstrip('/')}"
+
     try:
         response = requests.request(
-            method,
-            f"{API_URL}{endpoint}",
-            json=dict(data) if data is not None else None,
-            timeout=10,
+            method=method.upper(),
+            url=url,
+            json=data,
+            timeout=API_TIMEOUT,
         )
 
-        if response.status_code in (200, 201, 202, 204):
-            return True
+        if not 200 <= response.status_code < 300:
+            detail = response.text[:1000] or "No details returned."
+            try:
+                error_body: object = response.json()
+                if isinstance(error_body, dict):
+                    error_dict = cast(dict[str, Any], error_body)
+                    detail = str(
+                        error_dict.get("detail", error_dict)
+                    )[:1000]
+            except ValueError:
+                pass
 
-        st.error(
-            f"Request failed ({response.status_code}): {response.text}"
+            return False, (
+                f"HTTP {response.status_code}: {detail}"
+            )
+
+        if response.status_code == 204 or not response.content:
+            return True, None
+
+        try:
+            return True, response.json()
+        except ValueError:
+            return True, response.text
+
+    except requests.exceptions.Timeout:
+        return False, (
+            "The API request timed out. The backend may be starting "
+            "or responding slowly. Try again."
         )
-        return False
-
+    except requests.exceptions.ConnectionError:
+        return False, (
+            "Cannot connect to the FastAPI backend. Check that the "
+            "Render service is running and the API URL is correct."
+        )
     except requests.exceptions.RequestException as exc:
-        st.error(f"Cannot connect to FastAPI: {exc}")
-        return False
+        return False, f"Request error: {exc}"
 
 
-def get_data(endpoint: str) -> list[dict[str, Any]]:
-    try:
-        response = requests.get(
-            f"{API_URL}{endpoint}",
-            timeout=10,
-        )
-        response.raise_for_status()
+def get_records(endpoint: str) -> list[dict[str, Any]]:
+    """Fetch a list endpoint safely."""
+    success, result = api_request("GET", endpoint)
 
-        result: object = response.json()
-
-        if not isinstance(result, list):
-            st.error(f"Unexpected response format from {endpoint}.")
-            return []
-
-        raw_items = cast(list[object], result)
-        items: list[dict[str, Any]] = []
-
-        for raw_item in raw_items:
-            if not isinstance(raw_item, dict):
-                continue
-
-            item = cast(dict[str, Any], raw_item)
-            typed_item: dict[str, Any] = {}
-
-            for key, value in item.items():
-                typed_item[str(key)] = value
-
-            items.append(typed_item)
-
-        return items
-
-    except requests.exceptions.RequestException as exc:
-        st.error(f"Unable to load {endpoint}: {exc}")
+    if not success:
+        st.warning(f"Could not load {endpoint}: {result}")
         return []
 
-    except ValueError:
-        st.error(f"Invalid JSON response from {endpoint}.")
+    if not isinstance(result, list):
+        st.warning(
+            f"Expected a list from {endpoint}, but the API returned "
+            f"{type(result).__name__}. Check the FastAPI response."
+        )
         return []
 
+    raw_items = cast(list[object], result)
+    records: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if isinstance(raw_item, dict):
+            records.append(cast(dict[str, Any], raw_item))
+    return records
 
-# HELPER FUNCTIONS
+
+def send_action(
+    method: str,
+    endpoint: str,
+    data: dict[str, Any] | None = None,
+) -> bool:
+    """Perform a mutation and display success or failure."""
+    success, result = api_request(method, endpoint, data)
+
+    if success:
+        st.success("Operation completed successfully.")
+        return True
+
+    st.error(str(result))
+    return False
+
+
 def as_int(value: Any, default: int = 0) -> int:
     try:
         return int(value) if value is not None else default
@@ -114,173 +166,319 @@ def as_text(value: Any) -> str:
     return "" if value is None else str(value)
 
 
-def show_table(rows: list[dict[str, Any]]) -> None:
-    if not rows:
+def show_table(
+    records: list[dict[str, Any]],
+    key: str,
+) -> None:
+    """Display searchable records in a table."""
+    if not records:
         st.info("No records found.")
         return
 
-    df = pd.DataFrame.from_records(rows)
-    st.write(df)
+    df = pd.DataFrame.from_records(records)
+
+    search = st.text_input(
+        "Search records",
+        key=key,
+        placeholder="Search any displayed value...",
+    )
+
+    if search.strip():
+        search_text = search.strip()
+        searchable_rows = df.astype(str).agg(" ".join, axis=1)
+        mask = searchable_rows.str.contains(
+            search_text,
+            case=False,
+            na=False,
+            regex=False,
+        )
+        df = df.loc[mask]
+
+    st.caption(f"{len(df)} record(s) displayed")
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+    )
 
 
+# =========================================================
+# SIDEBAR
+# =========================================================
+
+with st.sidebar:
+    if LOGO_PATH.is_file():
+        st.image(str(LOGO_PATH), width=130)
+    else:
+        st.title("🎓")
+
+    st.title("Course Enrollment")
+    st.caption("Online Learning Management System")
+    st.divider()
+
+    page = st.radio(
+        "Navigation",
+        ["Dashboard", "Courses", "Students", "Enrollments"],
+    )
+
+    st.divider()
+    st.caption("Backend API")
+    st.code(API_URL, language=None)
+
+    if st.button("🔄 Refresh Data", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
+
+# =========================================================
 # LOAD DATA
-courses = get_data("/courses/")
-students = get_data("/students/")
-enrollments = get_data("/enrollments/")
+# =========================================================
+
+@st.cache_data(ttl=15, show_spinner=False)
+def load_records(
+    endpoint: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Cache read requests briefly to reduce unnecessary API calls."""
+    success, result = api_request("GET", endpoint)
+
+    if not success:
+        return [], str(result)
+
+    if not isinstance(result, list):
+        return [], (
+            f"Expected a list from {endpoint}; check the backend route."
+        )
+
+    raw_items = cast(list[object], result)
+    records: list[dict[str, Any]] = []
+    for raw_item in raw_items:
+        if isinstance(raw_item, dict):
+            records.append(cast(dict[str, Any], raw_item))
+    return records, None
 
 
+def refresh_data() -> None:
+    load_records.clear()
+
+
+courses, courses_error = load_records("/courses/")
+students, students_error = load_records("/students/")
+enrollments, enrollments_error = load_records("/enrollments/")
+
+# Keep the original list helper usable after cache loading.
+# The page uses the cached data above to avoid repeated requests.
+
+
+# =========================================================
 # DASHBOARD
-
+# =========================================================
 
 if page == "Dashboard":
+    header_left, header_right = st.columns([1, 5])
 
-    # ---------- Header ----------
-    title_col1, title_col = st.columns([1, 6])
-        
-    with title_col1:
-        st.image("logo.png", width=100)
-    with title_col:
+    with header_left:
+        if LOGO_PATH.is_file():
+            st.image(str(LOGO_PATH), width=100)
+        else:
+            st.title("🎓")
+
+    with header_right:
         st.title("Course Enrollment System")
         st.caption("ONLINE LEARNING MANAGEMENT")
         st.write(
-            "Manage courses, students, enrollments, and seat availability "
-            "from one place."
+            "Manage courses, students, enrollments, and seat "
+            "availability from one dashboard."
         )
 
     st.divider()
 
-    # ---------- Dashboard Statistics ----------
+    errors = [
+        message for message in (
+            courses_error,
+            students_error,
+            enrollments_error,
+        )
+        if message
+    ]
+
+    if errors:
+        st.warning(
+            "Some dashboard data could not be loaded. "
+            "Check the API status and endpoint configuration."
+        )
+        for message in errors:
+            st.caption(message)
+
     total_courses = len(courses)
     total_students = len(students)
-    total_enrollments = len(enrollments)
 
-    available_seats = sum(
-        as_int(course.get("seats_available"))
+    active_enrollments = [
+        enrollment for enrollment in enrollments
+        if as_text(enrollment.get("status", "active")).lower()
+        == "active"
+    ]
+
+    total_enrollments = len(enrollments)
+    total_active = len(active_enrollments)
+
+    total_capacity = sum(
+        max(0, as_int(course.get("capacity")))
         for course in courses
     )
 
-    total_capacity = sum(
-        as_int(course.get("capacity"))
+    available_seats = sum(
+        max(0, as_int(course.get("seats_available")))
         for course in courses
     )
 
     occupied_seats = max(0, total_capacity - available_seats)
 
-    seat_utilization = (
-        (occupied_seats / total_capacity) * 100
+    utilization = (
+        occupied_seats / total_capacity * 100
         if total_capacity > 0
         else 0.0
     )
 
-    # ---------- Summary Metrics ----------
     st.subheader("📊 Dashboard Overview")
 
-    col1, col2, col3, col4 = st.columns(4)
+    metric1, metric2, metric3, metric4 = st.columns(4)
 
-    col1.metric("📚 Total Courses", total_courses)
-    col2.metric("👨‍🎓 Total Students", total_students)
-    col3.metric("📝 Enrollments", total_enrollments)
-    col4.metric("💺 Available Seats", available_seats)
+    metric1.metric("📚 Total Courses", total_courses)
+    metric2.metric("👨‍🎓 Total Students", total_students)
+    metric3.metric("📝 Enrollments", total_enrollments)
+    metric4.metric("💺 Available Seats", available_seats)
 
     st.divider()
 
-    # ---------- Seat Availability ----------
-    st.subheader("💺 Seat Availability")
+    left, right = st.columns([2, 1])
 
-    progress_col, stats_col = st.columns([2, 1])
-
-    with progress_col:
-        st.write("Course Capacity Utilization")
+    with left:
+        st.subheader("💺 Overall Seat Utilization")
         st.progress(
-            int(min(100.0, max(0.0, seat_utilization)))
+            int(min(100, max(0, utilization)))
         )
+        st.write(f"**{utilization:.1f}%** of capacity occupied")
         st.caption(
-            f"{seat_utilization:.1f}% of total capacity is occupied"
+            "Occupied seats are estimated as total capacity "
+            "minus available seats."
         )
 
-    with stats_col:
-        st.write("**Total Capacity**")
-        st.title(f"{total_capacity:,}")
-        st.caption(f"{occupied_seats:,} occupied seats")
+    with right:
+        st.subheader("Capacity Summary")
+        st.metric("Total Capacity", f"{total_capacity:,}")
+        st.metric("Estimated Occupied Seats", f"{occupied_seats:,}")
+        st.metric("Active Enrollments", total_active)
 
     st.divider()
 
-    # ---------- Course Availability ----------
-    st.subheader("📈 Course-wise Available Seats")
+    st.subheader("📈 Course-wise Seat Availability")
 
     if courses:
+        chart_rows: list[dict[str, str | int]] = []
+
         for course in courses:
-            course_title = str(course.get("title", "Untitled"))
-            seats = max(0, as_int(course.get("seats_available")))
             capacity = max(0, as_int(course.get("capacity")))
+            seats = max(
+                0,
+                min(
+                    capacity if capacity > 0 else as_int(
+                        course.get("seats_available")
+                    ),
+                    as_int(course.get("seats_available")),
+                ),
+            )
 
-            st.write(f"**{course_title}**")
+            title = as_text(course.get("title")) or "Untitled course"
+            course_id = course.get("id", "N/A")
 
-            if capacity > 0:
-                availability_percent = min(100.0, seats / capacity * 100)
-                st.progress(int(availability_percent))
-                st.caption(
-                    f"{seats} of {capacity} seats available "
-                    f"({availability_percent:.1f}%)"
+            with st.expander(f"📘 {title} — ID {course_id}"):
+                if capacity > 0:
+                    percentage = seats / capacity * 100
+                    st.progress(int(min(100, percentage)))
+                    st.write(
+                        f"**{seats} available** out of {capacity} seats "
+                        f"({percentage:.1f}% available)"
+                    )
+                else:
+                    st.write(f"Available seats: {seats}")
+                    st.caption("Capacity is not configured.")
+
+                st.write(
+                    f"Instructor: {as_text(course.get('instructor')) or 'Not specified'}"
                 )
-            else:
-                st.caption(f"{seats} seats available; capacity not set")
+                st.write(
+                    f"Fee: {as_float(course.get('fee')):,.2f}"
+                )
 
-    else:
-        st.info("No courses available to display.")
+            chart_rows.append({
+                "Course": title,
+                "Available Seats": seats,
+                "Occupied Seats": max(0, capacity - seats),
+            })
 
-    st.divider()
-
-    # ---------- Course List ----------
-    st.subheader("📚 Course Management")
-    st.caption(
-        "Overview of all courses currently registered in the system."
-    )
-
-    if courses:
-        show_table(courses)
-    else:
-        st.info(
-            "No courses found. Add your first course from the Courses page."
+        chart_df = pd.DataFrame.from_records(chart_rows).set_index("Course")
+        st.subheader("Seat Distribution")
+        st.bar_chart(
+            chart_df[["Available Seats", "Occupied Seats"]]
         )
+    else:
+        st.info("No courses are available.")
 
-    # ---------- Footer ----------
     st.divider()
+    st.subheader("📋 Course Management Overview")
+    show_table(courses, "dashboard_course_search")
+
     st.caption("Course Enrollment System | Dashboard")
 
 
-
-
+# =========================================================
 # COURSES
+# =========================================================
+
 elif page == "Courses":
-    st.title("📚 Courses")
+    st.title("📚 Course Management")
 
     action = st.radio(
         "Choose Action",
         ["Create", "View", "Update", "Delete"],
         horizontal=True,
+        key="course_action",
     )
 
     if action == "Create":
-        with st.form("create_course"):
+        with st.form("create_course_form"):
             title = st.text_input("Course Title")
             instructor = st.text_input("Instructor")
             capacity = st.number_input(
-                "Seat Capacity", min_value=1, value=30, step=1
+                "Seat Capacity",
+                min_value=1,
+                value=30,
+                step=1,
             )
             seats_available = st.number_input(
-                "Seats Available", min_value=0, value=30, step=1
+                "Seats Available",
+                min_value=0,
+                value=30,
+                step=1,
             )
             fee = st.number_input(
-                "Fee", min_value=0.0, value=0.0, step=100.0
+                "Course Fee",
+                min_value=0.0,
+                value=0.0,
+                step=100.0,
             )
-            submitted = st.form_submit_button("Create Course")
+            submitted = st.form_submit_button(
+                "Create Course",
+                use_container_width=True,
+            )
 
         if submitted:
             if not title.strip():
-                st.warning("Enter a course title.")
+                st.warning("Course title is required.")
             elif seats_available > capacity:
-                st.warning("Available seats cannot exceed capacity.")
+                st.warning(
+                    "Available seats cannot exceed the capacity."
+                )
             else:
                 data: dict[str, Any] = {
                     "title": title.strip(),
@@ -290,25 +488,35 @@ elif page == "Courses":
                     "fee": float(fee),
                 }
 
-                if send_data("POST", "/courses/", data):
-                    st.success("Course created successfully.")
+                if send_action("POST", "/courses/", data):
+                    refresh_data()
                     st.rerun()
 
     elif action == "View":
-        show_table(courses)
+        show_table(courses, "course_view_search")
 
     elif action == "Update":
-        if courses:
+        if not courses:
+            st.info("No courses available to update.")
+        else:
             options = {
                 f"{c.get('id')} - {c.get('title')}": c
                 for c in courses
             }
             selected = st.selectbox(
-                "Select Course", list(options.keys())
+                "Select Course",
+                list(options.keys()),
             )
             course = options[selected]
 
-            with st.form("update_course"):
+            current_capacity = max(
+                1, as_int(course.get("capacity"), 1)
+            )
+            current_seats = max(
+                0, as_int(course.get("seats_available"))
+            )
+
+            with st.form("update_course_form"):
                 title = st.text_input(
                     "Course Title",
                     value=as_text(course.get("title")),
@@ -320,195 +528,256 @@ elif page == "Courses":
                 capacity = st.number_input(
                     "Seat Capacity",
                     min_value=1,
-                    value=max(1, as_int(course.get("capacity"), 1)),
+                    value=current_capacity,
+                    step=1,
+                )
+                seats_available = st.number_input(
+                    "Seats Available",
+                    min_value=0,
+                    value=min(current_seats, current_capacity),
+                    step=1,
                 )
                 fee = st.number_input(
-                    "Fee",
+                    "Course Fee",
                     min_value=0.0,
                     value=max(0.0, as_float(course.get("fee"))),
                     step=100.0,
                 )
-                submitted = st.form_submit_button("Save Changes")
+                submitted = st.form_submit_button(
+                    "Save Changes",
+                    use_container_width=True,
+                )
 
             if submitted:
                 if not title.strip():
-                    st.warning("Enter a course title.")
+                    st.warning("Course title is required.")
+                elif seats_available > capacity:
+                    st.warning(
+                        "Available seats cannot exceed capacity."
+                    )
                 else:
                     data: dict[str, Any] = {
                         "title": title.strip(),
                         "instructor": instructor.strip() or None,
                         "capacity": int(capacity),
+                        "seats_available": int(seats_available),
                         "fee": float(fee),
                     }
 
-                    if send_data(
+                    if send_action(
                         "PUT",
                         f"/courses/{course.get('id')}",
                         data,
                     ):
-                        st.success("Course updated successfully.")
+                        refresh_data()
                         st.rerun()
-        else:
-            st.info("No courses available to update.")
 
     elif action == "Delete":
-        if courses:
+        if not courses:
+            st.info("No courses available to delete.")
+        else:
             options = {
                 f"{c.get('id')} - {c.get('title')}": c
                 for c in courses
             }
             selected = st.selectbox(
-                "Select Course to Delete", list(options.keys())
+                "Select Course to Delete",
+                list(options.keys()),
             )
             course = options[selected]
 
-            if st.button("Delete Course"):
-                if send_data(
-                    "DELETE", f"/courses/{course.get('id')}"
+            st.warning(
+                "Deleting a course may be rejected if the backend "
+                "protects courses with existing enrollments."
+            )
+
+            confirm = st.checkbox(
+                "I confirm that I want to delete this course."
+            )
+
+            if st.button(
+                "Delete Course",
+                type="primary",
+                disabled=not confirm,
+            ):
+                if send_action(
+                    "DELETE",
+                    f"/courses/{course.get('id')}",
                 ):
-                    st.success("Course deleted successfully.")
+                    refresh_data()
                     st.rerun()
-        else:
-            st.info("No courses available to delete.")
 
 
+# =========================================================
 # STUDENTS
+# =========================================================
+
 elif page == "Students":
-    st.title("👨‍🎓 Students")
+    st.title("👨‍🎓 Student Management")
 
     action = st.radio(
         "Choose Action",
         ["Register", "View", "Update", "Delete"],
         horizontal=True,
+        key="student_action",
     )
 
     if action == "Register":
-        with st.form("register_student"):
+        with st.form("register_student_form"):
             name = st.text_input("Full Name")
-            email = st.text_input("Email")
-            submitted = st.form_submit_button("Register Student")
+            email = st.text_input("Email Address")
+            submitted = st.form_submit_button(
+                "Register Student",
+                use_container_width=True,
+            )
 
         if submitted:
             if not name.strip() or not email.strip():
-                st.warning("Enter both name and email.")
+                st.warning("Both name and email are required.")
+            elif "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+                st.warning("Enter a valid email address.")
             else:
                 data: dict[str, Any] = {
                     "name": name.strip(),
                     "email": email.strip(),
                 }
 
-                if send_data("POST", "/students/", data):
-                    st.success("Student registered successfully.")
+                if send_action("POST", "/students/", data):
+                    refresh_data()
                     st.rerun()
 
     elif action == "View":
-        show_table(students)
+        show_table(students, "student_view_search")
 
     elif action == "Update":
-        if students:
+        if not students:
+            st.info("No students available to update.")
+        else:
             options = {
                 f"{s.get('id')} - {s.get('name')}": s
                 for s in students
             }
             selected = st.selectbox(
-                "Select Student", list(options.keys())
+                "Select Student",
+                list(options.keys()),
             )
             student = options[selected]
 
-            with st.form("update_student"):
+            with st.form("update_student_form"):
                 name = st.text_input(
                     "Full Name",
                     value=as_text(student.get("name")),
                 )
                 email = st.text_input(
-                    "Email",
+                    "Email Address",
                     value=as_text(student.get("email")),
                 )
-                submitted = st.form_submit_button("Save Changes")
+                submitted = st.form_submit_button(
+                    "Save Changes",
+                    use_container_width=True,
+                )
 
             if submitted:
                 if not name.strip() or not email.strip():
-                    st.warning("Enter both name and email.")
+                    st.warning("Both name and email are required.")
+                elif "@" not in email or "." not in email.rsplit("@", 1)[-1]:
+                    st.warning("Enter a valid email address.")
                 else:
                     data: dict[str, Any] = {
                         "name": name.strip(),
                         "email": email.strip(),
                     }
 
-                    if send_data(
+                    if send_action(
                         "PUT",
                         f"/students/{student.get('id')}",
                         data,
                     ):
-                        st.success("Student updated successfully.")
+                        refresh_data()
                         st.rerun()
-        else:
-            st.info("No students available to update.")
 
     elif action == "Delete":
-        if students:
+        if not students:
+            st.info("No students available to delete.")
+        else:
             options = {
                 f"{s.get('id')} - {s.get('name')}": s
                 for s in students
             }
             selected = st.selectbox(
-                "Select Student to Delete", list(options.keys())
+                "Select Student to Delete",
+                list(options.keys()),
             )
             student = options[selected]
 
-            if st.button("Delete Student"):
-                if send_data(
-                    "DELETE", f"/students/{student.get('id')}"
+            confirm = st.checkbox(
+                "I confirm that I want to delete this student."
+            )
+
+            if st.button(
+                "Delete Student",
+                type="primary",
+                disabled=not confirm,
+            ):
+                if send_action(
+                    "DELETE",
+                    f"/students/{student.get('id')}",
                 ):
-                    st.success("Student deleted successfully.")
+                    refresh_data()
                     st.rerun()
-        else:
-            st.info("No students available to delete.")
 
 
+# =========================================================
 # ENROLLMENTS
+# =========================================================
+
 elif page == "Enrollments":
-    st.title("📝 Enrollments")
+    st.title("📝 Enrollment Management")
 
     action = st.radio(
         "Choose Action",
         ["Enroll Student", "View", "Cancel"],
         horizontal=True,
+        key="enrollment_action",
     )
 
     if action == "Enroll Student":
         available_courses = [
-            course
-            for course in courses
+            course for course in courses
             if as_int(course.get("seats_available")) > 0
         ]
 
         if not students:
-            st.info("Register a student first.")
+            st.info("Register a student before enrolling.")
         elif not available_courses:
-            st.info("No courses have available seats.")
+            st.info("No courses currently have available seats.")
         else:
             student_options = {
-                f"{student.get('id')} - {student.get('name')}": student
-                for student in students
+                f"{s.get('id')} - {s.get('name')} ({s.get('email', '')})": s
+                for s in students
             }
 
             course_options = {
                 (
-                    f"{course.get('id')} - {course.get('title')} "
-                    f"({as_int(course.get('seats_available'))} seats left)"
-                ): course
-                for course in available_courses
+                    f"{c.get('id')} - {c.get('title')} "
+                    f"({as_int(c.get('seats_available'))} seats left)"
+                ): c
+                for c in available_courses
             }
 
-            with st.form("enroll_student"):
+            with st.form("enroll_student_form"):
                 selected_student = st.selectbox(
-                    "Select Student", list(student_options.keys())
+                    "Select Student",
+                    list(student_options.keys()),
                 )
                 selected_course = st.selectbox(
-                    "Select Course", list(course_options.keys())
+                    "Select Course",
+                    list(course_options.keys()),
                 )
-                submitted = st.form_submit_button("Enroll Student")
+                submitted = st.form_submit_button(
+                    "Enroll Student",
+                    use_container_width=True,
+                )
 
             if submitted:
                 student = student_options[selected_student]
@@ -519,41 +788,67 @@ elif page == "Enrollments":
                     "course_id": as_int(course.get("id")),
                 }
 
-                if send_data("POST", "/enrollments/", data):
-                    st.success("Student enrolled successfully.")
+                # Change this endpoint if your backend defines POST /enroll.
+                if send_action("POST", "/enrollments/", data):
+                    refresh_data()
                     st.rerun()
 
     elif action == "View":
-        show_table(enrollments)
+        show_table(enrollments, "enrollment_view_search")
 
     elif action == "Cancel":
         active_enrollments = [
-            enrollment
-            for enrollment in enrollments
-            if as_text(enrollment.get("status")).lower() == "active"
+            enrollment for enrollment in enrollments
+            if as_text(
+                enrollment.get("status", "active")
+            ).lower() == "active"
         ]
 
-        if active_enrollments:
+        if not active_enrollments:
+            st.info("No active enrollments available to cancel.")
+        else:
             options = {
                 (
-                    f"Enrollment {enrollment.get('id')} - "
-                    f"Student {enrollment.get('student_id')} - "
-                    f"Course {enrollment.get('course_id')}"
-                ): enrollment
-                for enrollment in active_enrollments
+                    f"Enrollment {e.get('id')} — "
+                    f"Student {e.get('student_id')} — "
+                    f"Course {e.get('course_id')}"
+                ): e
+                for e in active_enrollments
             }
 
             selected = st.selectbox(
-                "Select Enrollment", list(options.keys())
+                "Select Enrollment",
+                list(options.keys()),
             )
             enrollment = options[selected]
 
-            if st.button("Cancel Enrollment"):
-                if send_data(
+            st.warning(
+                "Cancellation should update the enrollment status "
+                "and restore a seat in the backend."
+            )
+
+            confirm = st.checkbox(
+                "I confirm that I want to cancel this enrollment."
+            )
+
+            if st.button(
+                "Cancel Enrollment",
+                type="primary",
+                disabled=not confirm,
+            ):
+                if send_action(
                     "DELETE",
                     f"/enrollments/{enrollment.get('id')}",
                 ):
-                    st.success("Enrollment cancelled successfully.")
+                    refresh_data()
                     st.rerun()
-        else:
-            st.info("No active enrollments to cancel.")
+
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.divider()
+st.caption(
+    "Course Enrollment System | Streamlit Frontend | FastAPI Backend"
+)
