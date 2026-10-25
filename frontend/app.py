@@ -195,7 +195,7 @@ def show_table(
         df = df.loc[mask]
 
     st.caption(f"{len(df)} record(s) displayed")
-    st.dataframe(
+    st.dataframe(  # pyright: ignore[reportUnknownMemberType]
         df,
         use_container_width=True,
         hide_index=True,
@@ -418,7 +418,7 @@ if page == "Dashboard":
 
         chart_df = pd.DataFrame.from_records(chart_rows).set_index("Course")
         st.subheader("Seat Distribution")
-        st.bar_chart(
+        st.bar_chart(  # pyright: ignore[reportUnknownMemberType]
             chart_df[["Available Seats", "Occupied Seats"]]
         )
     else:
